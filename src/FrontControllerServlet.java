@@ -29,7 +29,7 @@ public class FrontControllerServlet extends HttpServlet {
         String configuredPackage = config != null ? config.getInitParameter("base-package") : null;
         packageName = configuredPackage != null && !configuredPackage.isBlank()
                 ? configuredPackage
-                : "aina.main";
+                : "projet.main";
 
         try {
             scanPackage(packageName);
