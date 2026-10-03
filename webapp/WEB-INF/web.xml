@@ -12,7 +12,7 @@
 
         <init-param>
             <param-name>base-package</param-name>
-            <param-value>aina.main</param-value>
+            <param-value>projet.main</param-value>
         </init-param>
     </servlet>
 

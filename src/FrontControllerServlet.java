@@ -17,19 +17,30 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+
 import src.annotation.Controller;
+import src.annotation.JsonResponse;
 
 public class FrontControllerServlet extends HttpServlet {
-    private final List<String> listClassAnnoted = new ArrayList<>();
+
+    private final List<Class<?>> listClassAnnotated = new ArrayList<>();
+
     private String packageName;
 
     @Override
     public void init() throws ServletException {
+
         ServletConfig config = getServletConfig();
-        String configuredPackage = config != null ? config.getInitParameter("base-package") : null;
-        packageName = configuredPackage != null && !configuredPackage.isBlank()
-                ? configuredPackage
-                : "aina.main";
+
+        String configuredPackage =
+                config != null
+                        ? config.getInitParameter("base-package")
+                        : null;
+
+        packageName =
+                configuredPackage != null && !configuredPackage.isBlank()
+                        ? configuredPackage
+                        : "projet.main";
 
         try {
             scanPackage(packageName);
@@ -38,81 +49,264 @@ public class FrontControllerServlet extends HttpServlet {
         }
     }
 
-    private void scanPackage(String packageName) throws IOException, ClassNotFoundException, URISyntaxException {
+    private void scanPackage(String packageName)
+            throws IOException, ClassNotFoundException, URISyntaxException {
+
         String path = packageName.replace('.', '/');
-        URL url = Thread.currentThread().getContextClassLoader().getResource(path);
+
+        URL url =
+                Thread.currentThread()
+                        .getContextClassLoader()
+                        .getResource(path);
 
         if (url == null) {
-            throw new IOException("Package introuvable : " + packageName);
+            throw new IOException(
+                    "Package introuvable : " + packageName
+            );
         }
 
         if ("jar".equals(url.getProtocol())) {
+
             scanJar(path, url);
+
         } else if ("file".equals(url.getProtocol())) {
-            scanDirectory(packageName, new File(url.toURI()));
+
+            scanDirectory(
+                    packageName,
+                    new File(url.toURI())
+            );
         }
     }
 
-    private void scanJar(String path, URL url) throws IOException, ClassNotFoundException {
-        JarURLConnection connection = (JarURLConnection) url.openConnection();
+    private void scanJar(String path, URL url)
+            throws IOException, ClassNotFoundException {
+
+        JarURLConnection connection =
+                (JarURLConnection) url.openConnection();
+
         JarFile jarFile = connection.getJarFile();
 
-        Enumeration<JarEntry> entries = jarFile.entries();
+        Enumeration<JarEntry> entries =
+                jarFile.entries();
+
         while (entries.hasMoreElements()) {
+
             JarEntry entry = entries.nextElement();
+
             String name = entry.getName();
 
-            if (name.startsWith(path) && name.endsWith(".class") && !entry.isDirectory()) {
-                String className = name.replace('/', '.').substring(0, name.length() - 6);
+            if (name.startsWith(path)
+                    && name.endsWith(".class")
+                    && !entry.isDirectory()) {
+
+                String className =
+                        name.replace('/', '.')
+                                .substring(
+                                        0,
+                                        name.length() - 6
+                                );
+
                 registerIfController(className);
             }
         }
     }
 
-    private void scanDirectory(String packageName, File folder) throws ClassNotFoundException {
+    private void scanDirectory(
+            String packageName,
+            File folder
+    ) throws ClassNotFoundException {
+
         File[] files = folder.listFiles();
+
         if (files == null) {
             return;
         }
 
         for (File file : files) {
+
             if (file.isDirectory()) {
-                scanDirectory(packageName + "." + file.getName(), file);
+
+                scanDirectory(
+                        packageName + "." + file.getName(),
+                        file
+                );
+
                 continue;
             }
 
             if (file.getName().endsWith(".class")) {
-                String className = packageName + "." + file.getName().replace(".class", "");
+
+                String className =
+                        packageName
+                                + "."
+                                + file.getName()
+                                        .replace(".class", "");
+
                 registerIfController(className);
             }
         }
     }
 
-    private void registerIfController(String className) throws ClassNotFoundException {
+    private void registerIfController(String className)
+            throws ClassNotFoundException {
+
         Class<?> clazz = Class.forName(className);
 
         if (clazz.isAnnotationPresent(Controller.class)) {
-            listClassAnnoted.add(clazz.getSimpleName());
+
+            listClassAnnotated.add(clazz);
         }
     }
 
     @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException {
+    protected void doGet(
+            HttpServletRequest req,
+            HttpServletResponse res
+    ) throws ServletException, IOException {
+
         processRequest(req, res);
     }
 
     @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException {
+    protected void doPost(
+            HttpServletRequest req,
+            HttpServletResponse res
+    ) throws ServletException, IOException {
+
         processRequest(req, res);
     }
 
-    public void processRequest(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException {
-        PrintWriter out = res.getWriter();
-        out.println(req.getRequestURI());
-        out.println("Liste des classes annotees :");
-        for (String s : listClassAnnoted) {
-            out.println(s);
+    public void processRequest(
+            HttpServletRequest req,
+            HttpServletResponse res
+    ) throws ServletException, IOException {
+
+        String uri = req.getRequestURI();
+
+        String contextPath = req.getContextPath();
+
+        // Exemple :
+        // uri         = /Framework/test/hello
+        // contextPath = /Framework
+        // route       = /test/hello
+
+        String route =
+                uri.substring(contextPath.length());
+
+        String[] parts = route.split("/");
+
+        if (parts.length < 3) {
+
+            res.setStatus(
+                    HttpServletResponse.SC_NOT_FOUND
+            );
+
+            res.getWriter().println("URL invalide");
+
+            return;
         }
+
+        String urlBase = "/" + parts[1];
+
+        String methodName = parts[2];
+
+        // Recherche du Controller
+
+        for (Class<?> controllerClass : listClassAnnotated) {
+
+            Controller controllerAnnotation =
+                    controllerClass.getAnnotation(
+                            Controller.class
+                    );
+
+            if (!controllerAnnotation
+                    .urlBase()
+                    .equals(urlBase)) {
+
+                continue;
+            }
+
+            try {
+
+                // Création de l'objet Controller
+
+                Object controller =
+                        controllerClass
+                                .getDeclaredConstructor()
+                                .newInstance();
+
+                // Recherche de la méthode
+
+                var method =
+                        controllerClass
+                                .getDeclaredMethod(methodName);
+
+                // Exécution de la méthode
+
+                Object result =
+                        method.invoke(controller);
+
+                // Vérification de @JsonResponse
+
+                if (method.isAnnotationPresent(
+                        JsonResponse.class)) {
+
+                    res.setContentType(
+                            "application/json"
+                    );
+
+                    res.setCharacterEncoding("UTF-8");
+
+                    String json =
+                            convertirJson(result);
+
+                    PrintWriter out =
+                            res.getWriter();
+
+                    out.println(json);
+
+                } else {
+
+                    res.setContentType(
+                            "text/plain"
+                    );
+
+                    res.setCharacterEncoding("UTF-8");
+
+                    PrintWriter out =
+                            res.getWriter();
+
+                    out.println(result);
+                }
+
+                return;
+
+            } catch (Exception e) {
+
+                throw new ServletException(e);
+            }
+        }
+
+        // Aucun Controller trouvé
+
+        res.setStatus(
+                HttpServletResponse.SC_NOT_FOUND
+        );
+
+        res.getWriter().println(
+                "Controller introuvable"
+        );
     }
-    
+
+    private String convertirJson(Object objet) {
+
+        if (objet == null) {
+
+            return "null";
+        }
+
+        return "{ \"message\": \""
+                + objet.toString()
+                + "\" }";
+    }
 }
