@@ -29,7 +29,7 @@ public class FrontControllerServlet extends HttpServlet {
         String configuredPackage = config != null ? config.getInitParameter("base-package") : null;
         packageName = configuredPackage != null && !configuredPackage.isBlank()
                 ? configuredPackage
-                : "aina.main";
+                : "projet.main";
 
         try {
             scanPackage(packageName);
@@ -113,5 +113,26 @@ public class FrontControllerServlet extends HttpServlet {
         for (String s : listClassAnnoted) {
             out.println(s);
         }
+
+        if (method.isAnnotationPresent(JsonResponse.class)) {
+
+        Object result = method.invoke(controller);
+
+        res.setContentType("application/json");
+        res.setCharacterEncoding("UTF-8");
+
+        String json = convertirJson(result);
+
+        PrintWriter out = res.getWriter();
+        out.println(json);
+
+        }
+    }
+
+    private String convertirJson(Object objet) {
+        if (objet == null) {
+            return "null";
+        }
+        return "{ \"message\": \"" + objet.toString() + "\" }";
     }
 }
