@@ -113,6 +113,20 @@ public class FrontControllerServlet extends HttpServlet {
         for (String s : listClassAnnoted) {
             out.println(s);
         }
+
+        if (method.isAnnotationPresent(JsonResponse.class)) {
+
+        Object result = method.invoke(controller);
+
+        res.setContentType("application/json");
+        res.setCharacterEncoding("UTF-8");
+
+        String json = convertirJson(result);
+
+        PrintWriter out = res.getWriter();
+        out.println(json);
+
+        }
     }
 
     private String convertirJson(Object objet) {
