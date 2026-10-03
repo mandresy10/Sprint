@@ -114,4 +114,11 @@ public class FrontControllerServlet extends HttpServlet {
             out.println(s);
         }
     }
+
+    private String convertirJson(Object objet) {
+        if (objet == null) {
+            return "null";
+        }
+        return "{ \"message\": \"" + objet.toString() + "\" }";
+    }
 }
