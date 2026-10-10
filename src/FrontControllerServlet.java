@@ -20,6 +20,7 @@ import jakarta.servlet.http.HttpServletResponse;
 
 import src.annotation.Controller;
 import src.annotation.JsonResponse;
+import src.annotation.JsonObjet;
 
 public class FrontControllerServlet extends HttpServlet {
 
@@ -265,6 +266,15 @@ public class FrontControllerServlet extends HttpServlet {
 
                     out.println(json);
 
+                } else if(method.isAnnotationPresent(JsonObjet.class)){
+                        res.setContentType("application/json");
+                        res.setCharacterEncoding("UTF-8");
+
+                        String json = convertirObjetEnJson(result);
+
+                        PrintWriter out = res.getWriter();
+                        out.println(json);
+
                 } else {
 
                     res.setContentType(
@@ -309,4 +319,59 @@ public class FrontControllerServlet extends HttpServlet {
                 + objet.toString()
                 + "\" }";
     }
+
+    private String convertirObjetEnJson(Object objet) {
+
+    if (objet == null) {
+        return "null";
+    }
+
+    StringBuilder json = new StringBuilder();
+    json.append("{");
+
+    var fields = objet.getClass().getDeclaredFields();
+
+    for (int i = 0; i < fields.length; i++) {
+        var field = fields[i];
+        field.setAccessible(true);
+
+        try {
+
+            Object value = field.get(objet);
+
+            json.append("\"")
+                .append(field.getName())
+                .append("\":");
+
+            if (value instanceof String) {
+
+                json.append("\"")
+                    .append(value)
+                    .append("\"");
+
+            } else if (value instanceof Character) {
+
+                json.append("\"")
+                    .append(value)
+                    .append("\"");
+
+            } else {
+
+                json.append(value);
+            }
+
+            if (i < fields.length - 1) {
+                json.append(",");
+            }
+
+        } catch (IllegalAccessException e) {
+
+            throw new RuntimeException(e);
+        }
+    }
+
+    json.append("}");
+
+    return json.toString();
+}
 }
