@@ -1,31 +1,26 @@
 package projet.main;
 
+import projet.main.model.Employee;
 import src.annotation.Controller;
-import src.annotation.Param;
 import src.annotation.Url;
 
 @Controller(urlBase = "/employee")
 public class EmployeeController {
 
-    // Affiche le formulaire JSP
     @Url("/form")
     public String showForm() {
         return "/views/form-employe.jsp";
     }
 
-    // Recupere et identifie les valeurs saisies dans le formulaire
+    // Le framework va automatiquement instancier Employee et remplir ses champs
     @Url("/save")
-    public String saveEmployee(
-            @Param("nom") String nom,
-            @Param("prenom") String prenom,
-            @Param("age") int age,
-            @Param("poste") String poste) {
+    public String saveEmployee(Employee employee) {
 
-        System.out.println("--- DONNEES REÇUES DEPUIS LE FORMULAIRE ---");
-        System.out.println("Nom : " + nom);
-        System.out.println("Prénom : " + prenom);
-        System.out.println("Âge : " + age);
-        System.out.println("Poste : " + poste);
+        System.out.println("--- DONNÉES REÇUES VIA LE BINDING ---");
+        System.out.println("Nom : " + employee.getNom());
+        System.out.println("Prénom : " + employee.getPrenom());
+        System.out.println("Âge : " + employee.getAge());
+        System.out.println("Poste : " + employee.getPoste());
 
         return "/views/success.jsp";
     }
