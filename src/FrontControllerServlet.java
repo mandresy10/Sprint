@@ -3,12 +3,16 @@ package src;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.net.JarURLConnection;
 import java.net.URL;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
@@ -17,10 +21,17 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+
 import src.annotation.Controller;
+import src.annotation.JsonResponse;
+import src.annotation.JsonObjet;
+import src.annotation.Param;
+import src.annotation.Url;
 
 public class FrontControllerServlet extends HttpServlet {
-    private final List<String> listClassAnnoted = new ArrayList<>();
+
+    // Remplace la simple liste par une table de routage URL -> (Controller, Method)
+    private final Map<String, Mapping> urlMapping = new HashMap<>();
     private String packageName;
 
     @Override
@@ -38,7 +49,8 @@ public class FrontControllerServlet extends HttpServlet {
         }
     }
 
-    private void scanPackage(String packageName) throws IOException, ClassNotFoundException, URISyntaxException {
+    private void scanPackage(String packageName)
+            throws IOException, ClassNotFoundException, URISyntaxException {
         String path = packageName.replace('.', '/');
         URL url = Thread.currentThread().getContextClassLoader().getResource(path);
 
@@ -53,11 +65,12 @@ public class FrontControllerServlet extends HttpServlet {
         }
     }
 
-    private void scanJar(String path, URL url) throws IOException, ClassNotFoundException {
+    private void scanJar(String path, URL url)
+            throws IOException, ClassNotFoundException {
         JarURLConnection connection = (JarURLConnection) url.openConnection();
         JarFile jarFile = connection.getJarFile();
-
         Enumeration<JarEntry> entries = jarFile.entries();
+
         while (entries.hasMoreElements()) {
             JarEntry entry = entries.nextElement();
             String name = entry.getName();
@@ -71,9 +84,7 @@ public class FrontControllerServlet extends HttpServlet {
 
     private void scanDirectory(String packageName, File folder) throws ClassNotFoundException {
         File[] files = folder.listFiles();
-        if (files == null) {
-            return;
-        }
+        if (files == null) return;
 
         for (File file : files) {
             if (file.isDirectory()) {
@@ -92,7 +103,17 @@ public class FrontControllerServlet extends HttpServlet {
         Class<?> clazz = Class.forName(className);
 
         if (clazz.isAnnotationPresent(Controller.class)) {
-            listClassAnnoted.add(clazz.getSimpleName());
+            Controller controllerAnno = clazz.getAnnotation(Controller.class);
+            String urlBase = controllerAnno.urlBase();
+
+            // Parcourt les méthodes pour enregistrer les routes définies par @Url
+            for (Method method : clazz.getDeclaredMethods()) {
+                if (method.isAnnotationPresent(Url.class)) {
+                    Url urlAnno = method.getAnnotation(Url.class);
+                    String fullUrl = cleanUrl(urlBase + urlAnno.value());
+                    urlMapping.put(fullUrl, new Mapping(clazz, method));
+                }
+            }
         }
     }
 
@@ -107,32 +128,152 @@ public class FrontControllerServlet extends HttpServlet {
     }
 
     public void processRequest(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException {
-        PrintWriter out = res.getWriter();
-        out.println(req.getRequestURI());
-        out.println("Liste des classes annotees :");
-        for (String s : listClassAnnoted) {
-            out.println(s);
+        String uri = req.getRequestURI();
+        String contextPath = req.getContextPath();
+        String route = cleanUrl(uri.substring(contextPath.length()));
+
+        Mapping mapping = urlMapping.get(route);
+
+        if (mapping == null) {
+            res.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            res.getWriter().println("URL non trouvée : " + route);
+            return;
         }
 
-        if (method.isAnnotationPresent(JsonResponse.class)) {
+        try {
+            Class<?> controllerClass = mapping.getControllerClass();
+            Object controller = controllerClass.getDeclaredConstructor().newInstance();
+            Method method = mapping.getMethod();
 
-        Object result = method.invoke(controller);
+            // 1. IDENTIFICATION ET CONVERSION DES PARAMÈTRES DU FORMULAIRE (@Param)
+            Object[] args = resolveMethodArguments(method, req);
 
-        res.setContentType("application/json");
-        res.setCharacterEncoding("UTF-8");
+            // 2. IDENTIFICATION DU TYPE DE RETOUR DE LA MÉTHODE
+            Class<?> returnType = method.getReturnType();
+            System.out.println("=== [Sprint 7] Méthode exécutée : " + method.getName() + " ===");
+            System.out.println("=== Type de retour : " + returnType.getName() + " ===");
 
-        String json = convertirJson(result);
+            // 3. EXÉCUTION DE LA MÉTHODE AVEC LES ARGUMENTS INJECTÉS
+            Object result = method.invoke(controller, args);
 
-        PrintWriter out = res.getWriter();
-        out.println(json);
+            // Gestion des réponses (JSON ou Vue standard / Redirection)
+            if (method.isAnnotationPresent(JsonResponse.class)) {
+                res.setContentType("application/json");
+                res.setCharacterEncoding("UTF-8");
+                res.getWriter().println(convertirJson(result));
 
+            } else if (method.isAnnotationPresent(JsonObjet.class)) {
+                res.setContentType("application/json");
+                res.setCharacterEncoding("UTF-8");
+                res.getWriter().println(convertirObjetEnJson(result));
+
+            } else {
+                // Comportement par défaut (ex: RequestDispatcher vers la JSP)
+                if (result instanceof String viewPath) {
+                    req.getRequestDispatcher(viewPath).forward(req, res);
+                } else {
+                    res.setContentType("text/plain");
+                    res.setCharacterEncoding("UTF-8");
+                    res.getWriter().println(result);
+                }
+            }
+
+        } catch (Exception e) {
+            throw new ServletException(e);
         }
     }
 
-    private String convertirJson(Object objet) {
-        if (objet == null) {
-            return "null";
+    /**
+     * Analyse les paramètres de la méthode, lit les valeurs HTTP et gère la conversion de types.
+     */
+    private Object[] resolveMethodArguments(Method method, HttpServletRequest req) {
+        Parameter[] parameters = method.getParameters();
+        Object[] args = new Object[parameters.length];
+
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter parameter = parameters[i];
+            String paramName = parameter.getName(); // Nom par défaut (si compilé avec -parameters)
+
+            if (parameter.isAnnotationPresent(Param.class)) {
+                Param paramAnnotation = parameter.getAnnotation(Param.class);
+                paramName = paramAnnotation.value();
+            }
+
+            String rawValue = req.getParameter(paramName);
+            Class<?> paramType = parameter.getType();
+
+            // Conversion de la valeur saisie dans le formulaire vers le type Java cible
+            args[i] = convertValue(rawValue, paramType);
+
+            System.out.println("-> Paramètre formulaire : [" + paramName + "] | Type Java : " + paramType.getSimpleName() + " | Valeur : " + rawValue);
         }
+
+        return args;
+    }
+
+    private Object convertValue(String value, Class<?> targetType) {
+        if (value == null) {
+            return targetType.isPrimitive() ? 0 : null;
+        }
+
+        if (targetType == String.class) {
+            return value;
+        } else if (targetType == int.class || targetType == Integer.class) {
+            return Integer.parseInt(value);
+        } else if (targetType == long.class || targetType == Long.class) {
+            return Long.parseLong(value);
+        } else if (targetType == double.class || targetType == Double.class) {
+            return Double.parseDouble(value);
+        } else if (targetType == boolean.class || targetType == Boolean.class) {
+            return Boolean.parseBoolean(value);
+        }
+
+        return value;
+    }
+
+    private String cleanUrl(String url) {
+        if (url == null) return "/";
+        String cleaned = url.replaceAll("//+", "/");
+        if (!cleaned.startsWith("/")) {
+            cleaned = "/" + cleaned;
+        }
+        return cleaned;
+    }
+
+    private String convertirJson(Object objet) {
+        if (objet == null) return "null";
         return "{ \"message\": \"" + objet.toString() + "\" }";
+    }
+
+    private String convertirObjetEnJson(Object objet) {
+        if (objet == null) return "null";
+
+        StringBuilder json = new StringBuilder();
+        json.append("{");
+        var fields = objet.getClass().getDeclaredFields();
+
+        for (int i = 0; i < fields.length; i++) {
+            var field = fields[i];
+            field.setAccessible(true);
+
+            try {
+                Object value = field.get(objet);
+                json.append("\"").append(field.getName()).append("\":");
+
+                if (value instanceof String || value instanceof Character) {
+                    json.append("\"").append(value).append("\"");
+                } else {
+                    json.append(value);
+                }
+
+                if (i < fields.length - 1) {
+                    json.append(",");
+                }
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+        }
+        json.append("}");
+        return json.toString();
     }
 }
