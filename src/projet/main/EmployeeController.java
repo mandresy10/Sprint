@@ -1,4 +1,4 @@
-package src.projet.main;
+package projet.main;
 
 import src.annotation.Controller;
 import src.annotation.Param;

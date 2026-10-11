@@ -22,16 +22,21 @@ echo "=== Création du WAR ==="
 
 mkdir -p build/war/WEB-INF/classes
 
+# Copie tout le contenu de webapp (dossier views/ et WEB-INF/ inclus)
+cp -r webapp/* build/war/
+
+# Copie les classes compilées dans WEB-INF/classes
 cp -r build/classes/* build/war/WEB-INF/classes/
-cp -r webapp/WEB-INF build/war/
 
 jar -cf Framework.war -C build/war .
 
 echo "=== Déploiement vers Tomcat 10 ==="
 
+# Supprime l'ancienne version déployée (optionnel mais propre)
 sudo rm -rf /var/lib/tomcat10/webapps/Framework
 sudo rm -f /var/lib/tomcat10/webapps/Framework.war
 
+# Copie le nouveau fichier WAR dans le dossier webapps de Tomcat
 sudo cp Framework.war /var/lib/tomcat10/webapps/
 
 echo "=== Redémarrage Tomcat ==="

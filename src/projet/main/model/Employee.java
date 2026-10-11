@@ -1,4 +1,4 @@
-package src.projet.main.model;
+package projet.main.model;
 
 public class Employee {
     private String nom;
