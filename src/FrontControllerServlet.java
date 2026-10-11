@@ -185,31 +185,52 @@ public class FrontControllerServlet extends HttpServlet {
 
     /**
      * Analyse les paramètres de la méthode, lit les valeurs HTTP et gère la conversion de types.
+     * * Analyse les paramètres de la méthode :
+ * - Si annoté par @Param, récupère le paramètre HTTP spécifique.
+ * - Sinon, effectue le Data Binding automatique pour un objet complexe (ex: Employee).
      */
     private Object[] resolveMethodArguments(Method method, HttpServletRequest req) {
-        Parameter[] parameters = method.getParameters();
-        Object[] args = new Object[parameters.length];
+    Parameter[] parameters = method.getParameters();
+    Object[] args = new Object[parameters.length];
 
-        for (int i = 0; i < parameters.length; i++) {
-            Parameter parameter = parameters[i];
-            String paramName = parameter.getName(); // Nom par défaut (si compilé avec -parameters)
+    for (int i = 0; i < parameters.length; i++) {
+        Parameter parameter = parameters[i];
+        Class<?> paramType = parameter.getType();
 
-            if (parameter.isAnnotationPresent(Param.class)) {
-                Param paramAnnotation = parameter.getAnnotation(Param.class);
-                paramName = paramAnnotation.value();
-            }
-
+        if (parameter.isAnnotationPresent(Param.class)) {
+            // Cas 1 : Paramètre simple annoté par @Param("nom")
+            Param paramAnnotation = parameter.getAnnotation(Param.class);
+            String paramName = paramAnnotation.value();
             String rawValue = req.getParameter(paramName);
-            Class<?> paramType = parameter.getType();
-
-            // Conversion de la valeur saisie dans le formulaire vers le type Java cible
             args[i] = convertValue(rawValue, paramType);
 
-            System.out.println("-> Paramètre formulaire : [" + paramName + "] | Type Java : " + paramType.getSimpleName() + " | Valeur : " + rawValue);
-        }
+        } else {
+            // Cas 2 : Objet complexe (Data Binding automatique)
+            try {
+                Object complexObj = paramType.getDeclaredConstructor().newInstance();
+                var fields = paramType.getDeclaredFields();
 
-        return args;
+                for (var field : fields) {
+                    field.setAccessible(true);
+                    String fieldName = field.getName();
+                    String rawValue = req.getParameter(fieldName);
+
+                    if (rawValue != null) {
+                        Object convertedValue = convertValue(rawValue, field.getType());
+                        field.set(complexObj, convertedValue);
+                    }
+                }
+                args[i] = complexObj;
+                System.out.println("-> Objet bindé avec succès : " + paramType.getSimpleName());
+
+            } catch (Exception e) {
+                throw new RuntimeException("Erreur lors du binding de l'objet : " + paramType.getName(), e);
+            }
+        }
     }
+
+    return args;
+}
 
     private Object convertValue(String value, Class<?> targetType) {
         if (value == null) {
