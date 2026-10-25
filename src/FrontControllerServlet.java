@@ -2,22 +2,20 @@ package src;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.net.JarURLConnection;
 import java.net.URL;
 import java.net.URISyntaxException;
-import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
 import jakarta.servlet.ServletConfig;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -28,9 +26,13 @@ import src.annotation.JsonObjet;
 import src.annotation.Param;
 import src.annotation.Url;
 
+@MultipartConfig(
+    fileSizeThreshold = 1024 * 1024 * 2,
+    maxFileSize = 1024 * 1024 * 10,
+    maxRequestSize = 1024 * 1024 * 50
+)
 public class FrontControllerServlet extends HttpServlet {
 
-    // Remplace la simple liste par une table de routage URL -> (Controller, Method)
     private final Map<String, Mapping> urlMapping = new HashMap<>();
     private String packageName;
 
@@ -106,7 +108,6 @@ public class FrontControllerServlet extends HttpServlet {
             Controller controllerAnno = clazz.getAnnotation(Controller.class);
             String urlBase = controllerAnno.urlBase();
 
-            // Parcourt les méthodes pour enregistrer les routes définies par @Url
             for (Method method : clazz.getDeclaredMethods()) {
                 if (method.isAnnotationPresent(Url.class)) {
                     Url urlAnno = method.getAnnotation(Url.class);
@@ -128,15 +129,38 @@ public class FrontControllerServlet extends HttpServlet {
     }
 
     public void processRequest(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException {
-        String uri = req.getRequestURI();
-        String contextPath = req.getContextPath();
-        String route = cleanUrl(uri.substring(contextPath.length()));
+        String uri = req.getRequestURI();          // ex: "/Framework/form-employe"
+        String contextPath = req.getContextPath(); // ex: "/Framework"
+        
+        String route = uri;
+
+        // 1. Suppression propre du context path ou du mot "Framework"
+        if (contextPath != null && !contextPath.isEmpty() && route.startsWith(contextPath)) {
+            route = route.substring(contextPath.length());
+        }
+        if (route.startsWith("/Framework")) {
+            route = route.substring("/Framework".length());
+        } else if (route.startsWith("Framework")) {
+            route = route.substring("Framework".length());
+        }
+
+        // 2. Normalisation rigoureuse (garantit un slash unique au début, ex: "/form-employe")
+        route = cleanUrl(route);
+
+        // --- AFFICHAGE DE CONTRÔLE DANS LES LOGS TOMCAT ---
+        System.out.println("--------------------------------------------------");
+        System.out.println("[ROUTAGE] URI reçue       : " + uri);
+        System.out.println("[ROUTAGE] ContextPath     : " + contextPath);
+        System.out.println("[ROUTAGE] Route finale    : " + route);
+        System.out.println("[ROUTAGE] Routes connues  : " + urlMapping.keySet());
+        System.out.println("--------------------------------------------------");
 
         Mapping mapping = urlMapping.get(route);
 
         if (mapping == null) {
             res.setStatus(HttpServletResponse.SC_NOT_FOUND);
-            res.getWriter().println("URL non trouvée : " + route);
+            res.setContentType("text/html;charset=UTF-8");
+            res.getWriter().println("<!DOCTYPE html><html><head><title>404</title><style>body{font-family:sans-serif;text-align:center;padding-top:50px;}h1{font-size:50px;color:#d9534f;}</style></head><body><h1>404</h1><p>Route introuvable pour <b>[" + req.getMethod() + "] " + route + "</b></p><p>Routes enregistrées : " + urlMapping.keySet() + "</p></body></html>");
             return;
         }
 
@@ -145,30 +169,18 @@ public class FrontControllerServlet extends HttpServlet {
             Object controller = controllerClass.getDeclaredConstructor().newInstance();
             Method method = mapping.getMethod();
 
-            // 1. IDENTIFICATION ET CONVERSION DES PARAMÈTRES DU FORMULAIRE (@Param)
             Object[] args = resolveMethodArguments(method, req);
-
-            // 2. IDENTIFICATION DU TYPE DE RETOUR DE LA MÉTHODE
-            Class<?> returnType = method.getReturnType();
-            System.out.println("=== [Sprint 7] Méthode exécutée : " + method.getName() + " ===");
-            System.out.println("=== Type de retour : " + returnType.getName() + " ===");
-
-            // 3. EXÉCUTION DE LA MÉTHODE AVEC LES ARGUMENTS INJECTÉS
             Object result = method.invoke(controller, args);
 
-            // Gestion des réponses (JSON ou Vue standard / Redirection)
             if (method.isAnnotationPresent(JsonResponse.class)) {
                 res.setContentType("application/json");
                 res.setCharacterEncoding("UTF-8");
                 res.getWriter().println(convertirJson(result));
-
             } else if (method.isAnnotationPresent(JsonObjet.class)) {
                 res.setContentType("application/json");
                 res.setCharacterEncoding("UTF-8");
                 res.getWriter().println(convertirObjetEnJson(result));
-
             } else {
-                // Comportement par défaut (ex: RequestDispatcher vers la JSP)
                 if (result instanceof String viewPath) {
                     req.getRequestDispatcher(viewPath).forward(req, res);
                 } else {
@@ -183,72 +195,63 @@ public class FrontControllerServlet extends HttpServlet {
         }
     }
 
-    /**
-     * Analyse les paramètres de la méthode, lit les valeurs HTTP et gère la conversion de types.
-     * * Analyse les paramètres de la méthode :
- * - Si annoté par @Param, récupère le paramètre HTTP spécifique.
- * - Sinon, effectue le Data Binding automatique pour un objet complexe (ex: Employee).
-     */
     private Object[] resolveMethodArguments(Method method, HttpServletRequest req) {
-    Parameter[] parameters = method.getParameters();
-    Object[] args = new Object[parameters.length];
+        Parameter[] parameters = method.getParameters();
+        Object[] args = new Object[parameters.length];
+        MapFile mapFile = new MapFile(req);
 
-    for (int i = 0; i < parameters.length; i++) {
-        Parameter parameter = parameters[i];
-        Class<?> paramType = parameter.getType();
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter parameter = parameters[i];
+            Class<?> paramType = parameter.getType();
 
-        if (parameter.isAnnotationPresent(Param.class)) {
-            // Cas 1 : Paramètre simple annoté par @Param("nom")
-            Param paramAnnotation = parameter.getAnnotation(Param.class);
-            String paramName = paramAnnotation.value();
-            String rawValue = req.getParameter(paramName);
-            args[i] = convertValue(rawValue, paramType);
+            if (parameter.isAnnotationPresent(Param.class)) {
+                Param paramAnnotation = parameter.getAnnotation(Param.class);
+                String paramName = paramAnnotation.value();
+                String rawValue = req.getParameter(paramName);
+                args[i] = convertValue(rawValue, paramType);
+            } else if (paramType == UploadedFile.class) {
+                String paramName = parameter.getName();
+                args[i] = mapFile.getFile(paramName);
+            } else {
+                try {
+                    Object complexObj = paramType.getDeclaredConstructor().newInstance();
+                    var fields = paramType.getDeclaredFields();
 
-        } else {
-            // Cas 2 : Objet complexe (Data Binding automatique)
-            try {
-                Object complexObj = paramType.getDeclaredConstructor().newInstance();
-                var fields = paramType.getDeclaredFields();
+                    for (var field : fields) {
+                        field.setAccessible(true);
+                        String fieldName = field.getName();
 
-                for (var field : fields) {
-                    field.setAccessible(true);
-                    String fieldName = field.getName();
-                    String rawValue = req.getParameter(fieldName);
-
-                    if (rawValue != null) {
-                        Object convertedValue = convertValue(rawValue, field.getType());
-                        field.set(complexObj, convertedValue);
+                        if (field.getType() == UploadedFile.class) {
+                            UploadedFile file = mapFile.getFile(fieldName);
+                            if (file != null) {
+                                field.set(complexObj, file);
+                            }
+                        } else {
+                            String rawValue = req.getParameter(fieldName);
+                            if (rawValue != null) {
+                                Object convertedValue = convertValue(rawValue, field.getType());
+                                field.set(complexObj, convertedValue);
+                            }
+                        }
                     }
+                    args[i] = complexObj;
+                } catch (Exception e) {
+                    throw new RuntimeException("Erreur lors du binding de l'objet : " + paramType.getName(), e);
                 }
-                args[i] = complexObj;
-                System.out.println("-> Objet bindé avec succès : " + paramType.getSimpleName());
-
-            } catch (Exception e) {
-                throw new RuntimeException("Erreur lors du binding de l'objet : " + paramType.getName(), e);
             }
         }
+        return args;
     }
-
-    return args;
-}
 
     private Object convertValue(String value, Class<?> targetType) {
         if (value == null) {
             return targetType.isPrimitive() ? 0 : null;
         }
-
-        if (targetType == String.class) {
-            return value;
-        } else if (targetType == int.class || targetType == Integer.class) {
-            return Integer.parseInt(value);
-        } else if (targetType == long.class || targetType == Long.class) {
-            return Long.parseLong(value);
-        } else if (targetType == double.class || targetType == Double.class) {
-            return Double.parseDouble(value);
-        } else if (targetType == boolean.class || targetType == Boolean.class) {
-            return Boolean.parseBoolean(value);
-        }
-
+        if (targetType == String.class) return value;
+        if (targetType == int.class || targetType == Integer.class) return Integer.parseInt(value);
+        if (targetType == long.class || targetType == Long.class) return Long.parseLong(value);
+        if (targetType == double.class || targetType == Double.class) return Double.parseDouble(value);
+        if (targetType == boolean.class || targetType == Boolean.class) return Boolean.parseBoolean(value);
         return value;
     }
 
@@ -268,28 +271,21 @@ public class FrontControllerServlet extends HttpServlet {
 
     private String convertirObjetEnJson(Object objet) {
         if (objet == null) return "null";
-
         StringBuilder json = new StringBuilder();
         json.append("{");
         var fields = objet.getClass().getDeclaredFields();
-
         for (int i = 0; i < fields.length; i++) {
             var field = fields[i];
             field.setAccessible(true);
-
             try {
                 Object value = field.get(objet);
                 json.append("\"").append(field.getName()).append("\":");
-
                 if (value instanceof String || value instanceof Character) {
                     json.append("\"").append(value).append("\"");
                 } else {
                     json.append(value);
                 }
-
-                if (i < fields.length - 1) {
-                    json.append(",");
-                }
+                if (i < fields.length - 1) json.append(",");
             } catch (IllegalAccessException e) {
                 throw new RuntimeException(e);
             }
