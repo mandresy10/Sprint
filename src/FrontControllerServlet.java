@@ -19,6 +19,8 @@ import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
+import jakarta.servlet.http.Part;
 
 import src.annotation.Controller;
 import src.annotation.JsonResponse;
@@ -112,7 +114,7 @@ public class FrontControllerServlet extends HttpServlet {
                 if (method.isAnnotationPresent(Url.class)) {
                     Url urlAnno = method.getAnnotation(Url.class);
                     String fullUrl = cleanUrl(urlBase + urlAnno.value());
-                    urlMapping.put(fullUrl, new Mapping(clazz, method));
+                    urlMapping.put(fullUrl, new Mapping(clazz, method, urlAnno.requiresSession()));
                 }
             }
         }
@@ -164,12 +166,22 @@ public class FrontControllerServlet extends HttpServlet {
             return;
         }
 
+        if (mapping.requiresSession()
+                && req.getSession(false) == null
+                || mapping.requiresSession()
+                && req.getSession(false).getAttribute("utilisateur") == null) {
+            res.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            res.setContentType("text/html;charset=UTF-8");
+            res.getWriter().println("<h1>401 - Session requise</h1><p>Connectez-vous avant d'accéder à cette page.</p>");
+            return;
+        }
+
         try {
             Class<?> controllerClass = mapping.getControllerClass();
             Object controller = controllerClass.getDeclaredConstructor().newInstance();
             Method method = mapping.getMethod();
 
-            Object[] args = resolveMethodArguments(method, req);
+            Object[] args = resolveMethodArguments(method, req, res);
             Object result = method.invoke(controller, args);
 
             if (method.isAnnotationPresent(JsonResponse.class)) {
@@ -195,54 +207,76 @@ public class FrontControllerServlet extends HttpServlet {
         }
     }
 
-    private Object[] resolveMethodArguments(Method method, HttpServletRequest req) {
-        Parameter[] parameters = method.getParameters();
-        Object[] args = new Object[parameters.length];
-        MapFile mapFile = new MapFile(req);
+    private Object[] resolveMethodArguments(Method method, HttpServletRequest req, HttpServletResponse res) {
+    Parameter[] parameters = method.getParameters();
+    Object[] args = new Object[parameters.length];
+    
+    boolean isMultipart = req.getContentType() != null && req.getContentType().toLowerCase().startsWith("multipart/");
 
-        for (int i = 0; i < parameters.length; i++) {
-            Parameter parameter = parameters[i];
-            Class<?> paramType = parameter.getType();
+    for (int i = 0; i < parameters.length; i++) {
+        Parameter parameter = parameters[i];
+        Class<?> paramType = parameter.getType();
 
-            if (parameter.isAnnotationPresent(Param.class)) {
-                Param paramAnnotation = parameter.getAnnotation(Param.class);
-                String paramName = paramAnnotation.value();
+        if (parameter.isAnnotationPresent(Param.class)) {
+            // Cas 1 : Paramètre simple annoté par @Param("nom")
+            Param paramAnnotation = parameter.getAnnotation(Param.class);
+            String paramName = paramAnnotation.value();
+            
+            if (paramType == UploadedFile.class && isMultipart) {
+                try {
+                    Part part = req.getPart(paramName);
+                    if (part != null && part.getSize() > 0) {
+                        args[i] = new UploadedFile(part); // Utilisation du nouveau constructeur
+                    }
+                } catch (Exception e) {
+                    throw new RuntimeException("Erreur lors de la récupération du fichier : " + paramName, e);
+                }
+            } else {
                 String rawValue = req.getParameter(paramName);
                 args[i] = convertValue(rawValue, paramType);
-            } else if (paramType == UploadedFile.class) {
-                String paramName = parameter.getName();
-                args[i] = mapFile.getFile(paramName);
-            } else {
-                try {
-                    Object complexObj = paramType.getDeclaredConstructor().newInstance();
-                    var fields = paramType.getDeclaredFields();
+            }
 
-                    for (var field : fields) {
-                        field.setAccessible(true);
-                        String fieldName = field.getName();
+        } else if (paramType == HttpSession.class) {
+            args[i] = req.getSession();
+        } else if (paramType == HttpServletRequest.class) {
+            args[i] = req;
+        } else if (paramType == HttpServletResponse.class) {
+            args[i] = res;
+        } else {
+            // Cas 2 : Objet complexe (Data Binding automatique, ex: Employe)
+            try {
+                Object complexObj = paramType.getDeclaredConstructor().newInstance();
+                var fields = paramType.getDeclaredFields();
 
-                        if (field.getType() == UploadedFile.class) {
-                            UploadedFile file = mapFile.getFile(fieldName);
-                            if (file != null) {
-                                field.set(complexObj, file);
-                            }
-                        } else {
-                            String rawValue = req.getParameter(fieldName);
-                            if (rawValue != null) {
-                                Object convertedValue = convertValue(rawValue, field.getType());
-                                field.set(complexObj, convertedValue);
-                            }
+                for (var field : fields) {
+                    field.setAccessible(true);
+                    String fieldName = field.getName();
+                    Class<?> fieldType = field.getType();
+
+                    if (fieldType == UploadedFile.class && isMultipart) {
+                        Part part = req.getPart(fieldName);
+                        if (part != null && part.getSize() > 0) {
+                            field.set(complexObj, new UploadedFile(part)); // Utilisation du nouveau constructeur
+                        }
+                    } else {
+                        String rawValue = req.getParameter(fieldName);
+                        if (rawValue != null) {
+                            Object convertedValue = convertValue(rawValue, fieldType);
+                            field.set(complexObj, convertedValue);
                         }
                     }
-                    args[i] = complexObj;
-                } catch (Exception e) {
-                    throw new RuntimeException("Erreur lors du binding de l'objet : " + paramType.getName(), e);
                 }
+                args[i] = complexObj;
+                System.out.println("-> Objet bindé avec succès : " + paramType.getSimpleName());
+
+            } catch (Exception e) {
+                throw new RuntimeException("Erreur lors du binding de l'objet : " + paramType.getName(), e);
             }
         }
-        return args;
     }
 
+    return args;
+}
     private Object convertValue(String value, Class<?> targetType) {
         if (value == null) {
             return targetType.isPrimitive() ? 0 : null;
